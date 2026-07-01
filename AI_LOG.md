@@ -194,3 +194,41 @@ successful LLM categorization end to end in this environment — only that the r
 reaches the correct URL and that the failure/fallback path works correctly. Verifying the
 success path (does the LLM's category choice actually make sense for a given description)
 is the one remaining check that needs a real key and a human looking at the results.
+
+**Another real bug, same lesson as the CORS and URL-path ones — verify live, not just on
+paper:** my first implementation wrapped the persistence call in `catch
+(DataAccessException e)`, reasoning from Spring's exception hierarchy that "a DB failure
+throws a DataAccessException." To verify the retry policy actually worked, I ran the real
+app, killed the isolated test Postgres mid-flight, and watched the logs — the redelivery
+mechanism itself worked immediately (any uncaught exception rolls back the JMS session
+regardless of type), but my custom "Failed to persist transaction (delivery attempt N)"
+warning log never printed. The actual exception was
+`org.springframework.transaction.CannotCreateTransactionException` — thrown when a
+*connection cannot be acquired at all* (transaction begin time), which extends
+`TransactionException`, a sibling hierarchy to `DataAccessException`, not a subtype of it.
+`DataAccessException` only covers failures *after* a connection is already in hand (query
+errors, constraint violations). Reasoning from the exception hierarchy on paper missed
+this distinction; only actually killing the database and reading which exception class
+came back caught it. Fixed by broadening the catch to `RuntimeException`. Re-verified: 3
+delivery attempts logged with the correct exponential backoff timing (immediate, +3.1s,
++4.1s — matching the configured 1s/2s redelivery delays plus the DB connection timeout),
+then silence (no 4th attempt), then confirmed the message did not resurface even after
+Postgres came back online — meaning it was actually routed to the dead-letter address, not
+lost or endlessly retried. A new, unrelated transaction posted after DB recovery persisted
+normally, confirming the system self-heals once the outage clears.
+
+**JMS retry handling + structured validation errors:**
+
+Prompt: *"Implement the following two enhancements: 1) Retry handling (the JMS listener
+currently has no defined retry behavior for a failed message (bad categorization or DB
+issue)). 2) Map field errors to a structured error response in GlobalExceptionHandler."*
+
+For retry handling, "bad categorization" turned out to be a non-issue by construction:
+`CategorizationService` already catches every failure internally and falls back to
+rule-based matching, so it never throws — the only realistic failure point left in
+`TransactionListener` is the DB save. Implemented via Artemis's own redelivery policy
+(`ArtemisConfigurationCustomizer` in `JmsConfig`, configurable via
+`datakite.ledger.jms.max-delivery-attempts` etc.) rather than a manual retry loop in
+application code, since JMS redelivery-on-uncaught-exception is the idiomatic mechanism —
+letting the exception propagate and rolling back the transacted session is the "retry
+trigger," not something to catch and hide.

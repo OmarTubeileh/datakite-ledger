@@ -29,7 +29,8 @@ Client ← GET /api/v1/transactions/analytics/by-category ← chart data
 - **AI categorization**: Spring AI 1.0.5 (OpenAI-compatible client) → [Groq](https://groq.com)
   (`openai/gpt-oss-20b`), with a rule-based fallback — see Business Rules below
 - **Messaging**: ActiveMQ Artemis, embedded in-process (no separate broker to run/deploy —
-  it starts and stops with the Spring Boot application)
+  it starts and stops with the Spring Boot application). Configured with an explicit
+  retry/DLQ policy — see "Reliability" below.
 - **Frontend**: Next.js (App Router), React, shadcn/ui, Tailwind CSS, Recharts
 - **Infra**: Docker Compose (PostgreSQL, backend, frontend)
 
@@ -140,8 +141,10 @@ Unit tests only — no Docker/database/broker/API key required. Covers
 per category plus the Miscellaneous fallback), `CategorizationService` (LLM response
 parsing and its fallback to rule-based matching, with the LLM call mocked via Mockito deep
 stubs), and `TransactionController` (via a `@WebMvcTest` MockMvc slice test, with
-`TransactionService` mocked out — checks the `202`/`400` HTTP contract and that the
-controller delegates correctly).
+`TransactionService` mocked out — checks the `202`/`400` HTTP contract, the structured
+error response shape, and that the controller delegates correctly). The JMS retry/DLQ
+policy isn't unit-tested (it's broker behavior, not testable without a running Artemis
+instance) — it was verified live instead; see `AI_LOG.md`.
 
 ### Manual end-to-end testing
 
@@ -181,6 +184,25 @@ grid reflows from 4 columns down to 1 on narrow screens, and the table scrolls
 horizontally on mobile rather than squeezing its columns (with a "swipe to see more" hint
 below `sm`).
 
+## Reliability
+
+**JMS retry/DLQ**: if `TransactionListener` fails to persist a transaction (e.g. a
+transient DB outage), the message is redelivered with exponential backoff rather than
+lost or retried forever:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `datakite.ledger.jms.max-delivery-attempts` | `3` | total attempts before giving up |
+| `datakite.ledger.jms.redelivery-delay-ms` | `1000` | delay before the 2nd attempt |
+| `datakite.ledger.jms.max-redelivery-delay-ms` | `10000` | cap on the backoff delay (doubles each attempt) |
+| `datakite.ledger.jms.dead-letter-address` | `DLQ` | where the message goes after exhausting retries |
+
+After `max-delivery-attempts` failures, Artemis routes the message to the dead-letter
+address instead of redelivering it again — the transaction is not silently dropped, but
+it also won't be retried indefinitely. Verified live by actually stopping Postgres
+mid-flight and watching the attempt count, backoff timing, and DLQ routing happen for
+real (see `AI_LOG.md`).
+
 ## API
 
 | Method | Path                                          | Description                                  |
@@ -197,6 +219,26 @@ below `sm`).
   "currency": "USD",
   "date": "2026-07-01T12:00:00Z",
   "description": "Subscription fee for AWS Cloud us-east-1"
+}
+```
+
+### Validation error response (`400 Bad Request`)
+
+Invalid ingest payloads return a structured error body rather than a raw exception
+message, with one entry per invalid field:
+
+```json
+{
+  "timestamp": "2026-07-01T22:50:24.780257678+03:00",
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Validation failed",
+  "fieldErrors": [
+    { "field": "amount", "message": "must be greater than 0" },
+    { "field": "currency", "message": "must not be blank" },
+    { "field": "description", "message": "must not be blank" },
+    { "field": "date", "message": "must not be null" }
+  ]
 }
 ```
 

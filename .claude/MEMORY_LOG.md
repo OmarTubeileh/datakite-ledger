@@ -129,8 +129,73 @@ Two sections:
   `llama-3.1-8b-instant` (the obvious first-instinct picks) had been deprecated by Groq on
   2026-06-17, ~2 weeks before this session. Also confirmed Spring AI 2.0 requires Spring
   Boot 4 (incompatible with this project's Boot 3.3.4) before picking Spring AI 1.0.5.
+- **Project now has its own dedicated git repo** (`~/datakite-ledger/.git`, branch `main`,
+  initial commit `2baa81a`) — it used to be an untracked subdirectory of a git repo rooted
+  at `/home/omartubeileh`. User is setting up a public GitHub remote
+  (`github.com/<user>/datakite-ledger`) for assessment submission; push is left to the user
+  deliberately (their account, their call). `gh` CLI is not installed in this environment.
+- **User (feedback, applies beyond this project): pasted real secrets twice** — once
+  directly in chat (a Groq API key), once by hardcoding it into `docker-compose.yml`'s
+  `${VAR:default}` and later into `.env.example` (both NOT gitignored, unlike `.env`).
+  Both caught and fixed before any commit happened. Standing practice going forward: when
+  a user is about to add a secret to config, proactively steer them to a gitignored `.env`
+  file from the start rather than fixing it after the fact; flag immediately (don't wait to
+  be asked) if a real-looking secret appears in any file that isn't gitignored, and treat
+  any secret that appeared in the chat transcript itself as compromised regardless of where
+  it ends up.
+- **JMS retry/DLQ + structured validation errors — both done and verified live.**
+  `JmsConfig` gained an `ArtemisConfigurationCustomizer` bean setting max-delivery-attempts
+  (default 3), exponential redelivery backoff (1s→2s, capped 10s), and dead-letter-address
+  `DLQ` — all configurable via `datakite.ledger.jms.*` properties.
+  `GlobalExceptionHandler` now returns a structured `ErrorResponse`/`FieldErrorDetail` JSON
+  body (timestamp/status/error/message/fieldErrors) instead of a raw exception message for
+  `MethodArgumentNotValidException`. 18 tests still pass (updated the invalid-payload test
+  to assert the new JSON shape). Retry policy itself isn't unit-tested (broker behavior,
+  needs a real Artemis instance) — verified live instead, see History.
 
 ## History
+
+### 2026-07-01 — Git repo + secrets incidents + JMS retry/DLQ + structured errors
+- Set up a dedicated git repo for the project (previously an untracked subdirectory of the
+  home-directory repo): `git init -b main`, verified `.env`/`node_modules`/`target` etc.
+  properly excluded via `git add -A --dry-run` before staging, committed all 68 files as
+  the initial commit. User is adding a public GitHub remote themselves (no `gh` CLI here);
+  push deliberately left to them.
+- **Two secret-leak incidents, both caught before any commit**: (1) user pasted a real
+  Groq key directly in a chat message — advised rotating it. (2) user then hardcoded that
+  same key as a literal default in `docker-compose.yml`
+  (`${GROQ_API_KEY:gsk_...}` — also technically invalid Compose syntax, missing the `-` in
+  `:-`), which would have been committed and pushed to the public repo. Fixed to
+  `${GROQ_API_KEY:-none}`, set up `.env`/`.env.example` pattern (`.env` already gitignored
+  from the initial scaffold). (3) user then pasted a *new* key into `.env.example` itself
+  (not gitignored) — fixed again. Saved a standing cross-project feedback memory about
+  this (see `~/.claude/projects/-home-omartubeileh/memory/feedback_secrets_in_files.md`)
+  since it's a pattern worth watching for beyond this one project. Final state:
+  `git grep -n "gsk_"` across the committed tree confirmed clean (only a placeholder
+  example remains in README.md).
+- **JMS retry/DLQ**: added `ArtemisConfigurationCustomizer` in `JmsConfig` (max-delivery-
+  attempts, exponential redelivery delay, dead-letter-address, all via
+  `datakite.ledger.jms.*` properties), and had `TransactionListener` log delivery attempts
+  via the `JMSXDeliveryCount` message header before rethrowing. Verified live: stopped the
+  isolated test Postgres mid-flight, watched exactly 3 delivery attempts fire with the
+  correct exponential timing, confirmed no 4th attempt, confirmed the message did not
+  resurface after Postgres came back online (i.e. it actually reached the DLQ, not lost or
+  retried forever), and confirmed a fresh transaction posted after recovery processed
+  normally.
+- **Found via that live test, not from reading the exception hierarchy**: a DB
+  connection-*acquisition* failure throws `CannotCreateTransactionException`
+  (`TransactionException`, not `DataAccessException`) — my first `catch
+  (DataAccessException e)` silently missed logging it (the redelivery itself still worked,
+  since it doesn't depend on the catch block — only the observability log line was
+  affected). Broadened to `catch (RuntimeException e)`. Same recurring lesson as the CORS
+  bug and the Groq URL-doubling bug: verifying live surfaces exactly the class of mistake
+  that reasoning from documentation/hierarchy alone does not.
+- **Structured validation errors**: added `ErrorResponse`/`FieldErrorDetail` records in
+  `dto/`, `GlobalExceptionHandler.handleValidation()` now returns them instead of the raw
+  `MethodArgumentNotValidException` message. Updated `TransactionControllerTest`'s invalid-
+  payload test to assert the JSON shape (`jsonPath` on status/error/message/fieldErrors).
+  Verified live via curl too, not just the mocked test.
+- User explicitly asked for their prompt to be logged in `AI_LOG.md` — done (section 2).
 
 ### 2026-07-01 — Real LLM categorization via Groq (and a real URL bug)
 - User asked "are there free LLM options" then explicitly chose Groq. Researched current

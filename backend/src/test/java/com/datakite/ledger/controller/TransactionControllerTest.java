@@ -1,10 +1,13 @@
 package com.datakite.ledger.controller;
 
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.datakite.ledger.dto.TransactionRequest;
@@ -46,7 +49,7 @@ class TransactionControllerTest {
     }
 
     @Test
-    void ingestRejectsInvalidPayload() throws Exception {
+    void ingestRejectsInvalidPayloadWithStructuredError() throws Exception {
         String body = """
                 {
                   "amount": -5,
@@ -58,7 +61,14 @@ class TransactionControllerTest {
         mockMvc.perform(post("/api/v1/transactions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"))
+                .andExpect(jsonPath("$.message").value("Validation failed"))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(jsonPath("$.fieldErrors", hasSize(4)))
+                .andExpect(jsonPath("$.fieldErrors[*].field",
+                        containsInAnyOrder("amount", "currency", "description", "date")));
     }
 
     @Test
