@@ -151,8 +151,10 @@ instance) — it was verified live instead; see `AI_LOG.md`.
 With the stack running (Docker Compose or backend + frontend run separately),
 `scripts/test-requests.sh` has ready-to-run `curl` requests covering the fraud rule (one
 over the $5,000 threshold, one exactly at the boundary), all five categories (one
-transaction per category, including the Miscellaneous fallback), an invalid payload, and
-both `GET` endpoints:
+transaction per category, including the Miscellaneous fallback), two **Groq sanity
+checks** (descriptions with zero rule-based keyword overlap, implying a category through
+context alone — e.g. "DigitalOcean" for Infrastructure, "Olive Garden" for Business
+Meals), an invalid payload, and both `GET` endpoints:
 
 ```bash
 ./scripts/test-requests.sh
@@ -160,6 +162,13 @@ both `GET` endpoints:
 
 Copy/paste individual blocks from the script directly into a terminal if you just want to
 run one case.
+
+**On the Groq sanity checks specifically**: since they contain no keyword the rule-based
+fallback recognizes, a result of `MISCELLANEOUS` means the LLM call isn't actually
+succeeding (check the backend log for the fallback `WARN`); anything else confirms Groq is
+genuinely doing the classification. Confirmed with `GROQ_API_KEY` unset that both cases
+correctly land on `MISCELLANEOUS` via the fallback — i.e. they're truly keyword-free, so
+this test genuinely isolates whether Groq is working.
 
 ### Frontend
 
@@ -242,6 +251,13 @@ message, with one entry per invalid field:
 }
 ```
 
+The same `ErrorResponse` shape is used consistently for other error cases (`fieldErrors`
+is just empty when it doesn't apply):
+- **Malformed JSON body** → `400` with `"message": "Malformed request body"`.
+- **Any other unhandled exception** (e.g. a DB outage) → `500` with `"message": "An
+  unexpected error occurred"`. The real exception is logged server-side with full detail
+  but never echoed to the client, to avoid leaking internals.
+
 ### Ledger feed response (`GET /api/v1/transactions`)
 
 Newest first (ordered by `createdAt` descending):
@@ -285,6 +301,11 @@ simplification noted below.
   response. This means a Groq outage (or simply not having a key) degrades gracefully
   rather than blocking transaction processing. See `AI_LOG.md` for the design rationale
   and a real bug found/fixed while wiring this up (a doubled `/v1/v1/...` URL path).
+  **To check which engine actually categorized a given transaction**, watch the backend
+  log: a `WARN ... CategorizationService : LLM categorization failed, falling back to
+  rule-based matching: <reason>` line appears immediately before that transaction is
+  persisted if (and only if) the fallback engaged. No such warning means Groq's response
+  was used. This isn't currently surfaced in the API/UI — only in logs.
 - **Categories**: `SaaS/Software`, `Infrastructure`, `Business Meals`, `Operations`,
   `Miscellaneous`.
 - **Currency (v1 simplification)**: category analytics sums raw `amount` values with no

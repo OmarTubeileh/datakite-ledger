@@ -72,6 +72,27 @@ class TransactionControllerTest {
     }
 
     @Test
+    void malformedJsonReturnsStructuredError() throws Exception {
+        mockMvc.perform(post("/api/v1/transactions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{ this is not valid json"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("Malformed request body"));
+    }
+
+    @Test
+    void unexpectedExceptionReturnsStructuredServerError() throws Exception {
+        given(transactionService.listAll()).willThrow(new RuntimeException("boom"));
+
+        mockMvc.perform(get("/api/v1/transactions"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.status").value(500))
+                .andExpect(jsonPath("$.error").value("Internal Server Error"))
+                .andExpect(jsonPath("$.message").value("An unexpected error occurred"));
+    }
+
+    @Test
     void listDelegatesToService() throws Exception {
         given(transactionService.listAll()).willReturn(List.of());
 

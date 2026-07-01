@@ -232,3 +232,59 @@ rule-based matching, so it never throws — the only realistic failure point lef
 application code, since JMS redelivery-on-uncaught-exception is the idiomatic mechanism —
 letting the exception propagate and rolling back the transacted session is the "retry
 trigger," not something to catch and hide.
+
+**Pre-submission review + catch-all exception handler:**
+
+Asked directly: *"Do you have any enhancement/refactor suggestions before submitting the
+assessment"* — surfaced (among other things) that `GlobalExceptionHandler` only handled
+`MethodArgumentNotValidException`, so a malformed JSON body or any unexpected server error
+would fall through to Spring's default error page instead of the structured `ErrorResponse`
+shape just built for validation errors. Follow-up prompt: *"Yes, add the catch-all
+exception handler."* Added two more handlers: `HttpMessageNotReadableException` (malformed
+request bodies → `400`) and a true catch-all `Exception` handler (→ `500`, logs the full
+exception server-side via `log.error`, but only ever returns a generic
+"An unexpected error occurred" message to the client — deliberately not echoing exception
+internals back over the API).
+
+Also asked, separately: *"For #1 [testing real LLM categorization] how can I know if the
+decision was taken actually from Groq or simple from the Mock service?"* — a fair question,
+since nothing in the API/persisted data currently distinguishes the two. Answered honestly
+that today the only way is the backend log (`CategorizationService` logs a `WARN
+... falling back to rule-based matching: <reason>` only when the fallback engages; its
+absence means Groq's response was used) — and explicitly did *not* add a
+`categorizationSource` field to the API/UI unprompted, since that's a real (if small)
+schema/API/UI change beyond what was asked; offered it as an option instead.
+
+Verified both new handlers live, not just via the mocked `@WebMvcTest`: malformed JSON via
+`curl` → clean `400`; a genuine unhandled exception by stopping the isolated test Postgres
+mid-request on a `GET` call → clean `500` with the real `DataAccessResourceFailureException`
+stack trace visible in the server log but never in the HTTP response body. Notably, this
+GET-path failure surfaced as a proper `DataAccessException` subtype (unlike the earlier
+JMS-listener write-path failure, which was a `TransactionException`) — but since the
+catch-all handler catches `Exception` broadly, that hierarchy difference didn't matter
+here, which is exactly why a broad catch-all is the right tool for this specific job
+(unlike the narrower, type-specific catch used in `TransactionListener` for the retry
+logging). 20 tests pass (2 new: malformed-JSON and unexpected-exception cases).
+
+**Distinguishing genuine Groq calls from silent fallback:**
+
+Prompt: *"add a test case or two where the transaction description doesn't contain any
+keyword but belongs to one of the categories other than MISCELLANEOUS, I need it to check
+whether Groq is functioning as it should ir no"* — a well-targeted request: since the
+fallback engine defaults to `MISCELLANEOUS` whenever no keyword matches, a description
+that (a) contains zero `RuleBasedCategorizationService` keywords but (b) clearly implies a
+specific category to any reasonable reader turns "did Groq work?" into a simple
+observable: `MISCELLANEOUS` back means the fallback silently engaged; anything else means
+the LLM actually classified it correctly. Added two cases to `scripts/test-requests.sh`:
+"Monthly bill from DigitalOcean for compute instances" (implies Infrastructure) and "Team
+outing at Olive Garden after the sprint demo" (implies Business Meals) — both checked by
+hand against the full keyword list for accidental substring collisions (e.g. "rental"
+contains "rent," which would have defeated the point) before picking the final wording.
+
+Verified the "control" case live (no real `GROQ_API_KEY` in this environment): both
+descriptions correctly came back `MISCELLANEOUS` via the fallback, with the expected
+`WARN ... falling back to rule-based matching` log line for each — confirming they are
+genuinely keyword-free and the test actually isolates what it's meant to. This is the
+piece that still needs the user's real key to complete: running the same script with a
+real key and seeing `INFRASTRUCTURE`/`BUSINESS_MEALS` instead would be the positive
+confirmation that Groq itself is working correctly end to end.

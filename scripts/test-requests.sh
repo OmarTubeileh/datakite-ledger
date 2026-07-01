@@ -42,7 +42,26 @@ curl -i -X POST "$API_URL/api/v1/transactions" \
   -d '{"amount": 60.00, "currency": "USD", "date": "2026-07-01T12:20:00Z", "description": "Gift card for employee appreciation"}'
 echo
 
-echo "== 6. Invalid payload — expect 400 Bad Request =="
+echo "== 6. Groq check — Infrastructure implied WITHOUT any rule-based keyword =="
+echo "   (none of RuleBasedCategorizationService's keywords appear in this description —"
+echo "   'DigitalOcean'/'droplets' isn't in its keyword list. If Groq is actually being"
+echo "   used, expect INFRASTRUCTURE. If it comes back MISCELLANEOUS instead, the LLM call"
+echo "   is failing/falling back — check the backend log for a 'falling back to rule-based"
+echo "   matching' WARN line to confirm.)"
+curl -i -X POST "$API_URL/api/v1/transactions" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 75.00, "currency": "USD", "date": "2026-07-01T12:25:00Z", "description": "Monthly bill from DigitalOcean for compute instances"}'
+echo
+
+echo "== 7. Groq check — Business Meals implied WITHOUT any rule-based keyword =="
+echo "   (same idea: 'Olive Garden'/'outing' isn't in the keyword list either. Expect"
+echo "   BUSINESS_MEALS if Groq is working, MISCELLANEOUS if it's silently falling back.)"
+curl -i -X POST "$API_URL/api/v1/transactions" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 64.50, "currency": "USD", "date": "2026-07-01T12:30:00Z", "description": "Team outing at Olive Garden after the sprint demo"}'
+echo
+
+echo "== 8. Invalid payload — expect 400 Bad Request =="
 curl -i -X POST "$API_URL/api/v1/transactions" \
   -H "Content-Type: application/json" \
   -d '{"amount": -5, "currency": "", "description": ""}'
@@ -51,10 +70,10 @@ echo
 echo "Waiting 2s for async JMS processing..."
 sleep 2
 
-echo "== 7. Ledger feed (GET /api/v1/transactions) =="
+echo "== 9. Ledger feed (GET /api/v1/transactions) =="
 curl -s "$API_URL/api/v1/transactions"
 echo
 
-echo "== 8. Category analytics (GET /api/v1/transactions/analytics/by-category) =="
+echo "== 10. Category analytics (GET /api/v1/transactions/analytics/by-category) =="
 curl -s "$API_URL/api/v1/transactions/analytics/by-category"
 echo

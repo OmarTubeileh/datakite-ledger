@@ -152,8 +152,71 @@ Two sections:
   `MethodArgumentNotValidException`. 18 tests still pass (updated the invalid-payload test
   to assert the new JSON shape). Retry policy itself isn't unit-tested (broker behavior,
   needs a real Artemis instance) — verified live instead, see History.
+- **`GlobalExceptionHandler` now has a true catch-all** (`HttpMessageNotReadableException`
+  → 400 malformed body; `Exception` → 500 generic message, full details logged
+  server-side only). 20 tests total. No `categorizationSource` field added — user asked
+  "how can I tell if a category came from Groq vs. fallback," answered via the existing
+  log line rather than adding an unrequested API/schema change; offered it as an option.
+- Did a pre-submission review pass when asked "any enhancement/refactor suggestions" —
+  flagged (1) LLM success path still unverified by anyone (needs the user's real key),
+  (2) the exception-handler gap (now fixed), (3) confirm GitHub push + public visibility,
+  plus lower-priority items (frontend has zero tests, no Compose healthcheck on
+  backend/frontend, `CategorizationService.parse()`'s substring matching is slightly
+  fragile). Only #2 was actioned so far — the rest are still open for the user to decide on.
+- `scripts/test-requests.sh` gained 2 "Groq sanity check" cases (#6/#7, keyword-free
+  descriptions implying Infrastructure/Business Meals) to make "is Groq actually working"
+  observable — `MISCELLANEOUS` back means silent fallback, anything else means the LLM
+  really classified it. Verified live with no real key that both correctly land on
+  `MISCELLANEOUS` (confirms they're genuinely keyword-free). This is now the concrete way
+  for the user to close out the still-open "verify LLM success path" item from the
+  pre-submission review.
 
 ## History
+
+### 2026-07-01 — Groq sanity-check test cases (light checkpoint, script-only)
+- Added 2 cases to `scripts/test-requests.sh`: descriptions with zero
+  `RuleBasedCategorizationService` keyword overlap that still clearly imply a
+  category ("Monthly bill from DigitalOcean for compute instances" → Infrastructure,
+  "Team outing at Olive Garden after the sprint demo" → Business Meals). Purpose: make
+  "is Groq actually classifying, or silently falling back" directly observable —
+  `MISCELLANEOUS` means fallback, anything else means the LLM worked.
+- Checked both descriptions by hand against the *entire* keyword list (not just their own
+  target category) for accidental substring collisions before finalizing wording — e.g.
+  ruled out "rental" (contains "rent") as a candidate word for the Operations case that
+  didn't make the final cut.
+- Verified live with no real `GROQ_API_KEY`: both correctly came back `MISCELLANEOUS` with
+  the expected fallback `WARN` logged — confirms the cases are genuinely keyword-free.
+  Could not verify the positive case (real Groq success) — no real key in this
+  environment; that's now the user's one remaining step to close out the "verify LLM
+  success path" item from the earlier pre-submission review.
+
+### 2026-07-01 — Pre-submission review + catch-all exception handler
+- User asked for enhancement/refactor suggestions before submitting. Gave a prioritized
+  list rather than just implementing things: must-check (untested LLM success path, the
+  exception-handler gap, confirm public GitHub visibility) vs. nice-to-have (frontend
+  tests, Compose healthchecks, categorization parsing fragility) vs. deliberately-fine
+  (single currency, no auth, no pagination — already documented gaps).
+- User asked how to tell if a categorization came from Groq vs. the rule-based fallback.
+  No existing field/API distinguishes this. Answered via the log line that already exists
+  (`CategorizationService`'s fallback WARN) rather than adding a new
+  `categorizationSource` field unprompted — offered it as an option if they want it
+  visible in the UI, since that's a real schema/API/UI change beyond what was asked.
+- Implemented the one item actioned this turn: `GlobalExceptionHandler` gained
+  `HttpMessageNotReadableException` (malformed JSON → 400) and a true `Exception`
+  catch-all (→ 500, full stack trace logged server-side via `log.error`, only a generic
+  message ever sent to the client — deliberate, to avoid leaking internals over the API).
+  Verified live: malformed JSON via curl → clean 400; a genuine DB-outage exception forced
+  by stopping the isolated test Postgres mid-`GET` → clean 500, confirmed the real
+  `DataAccessResourceFailureException` appeared in the server log but never in the
+  response body. Interesting aside: this GET-path failure *was* a proper
+  `DataAccessException` subtype (unlike the JMS listener's earlier write-path
+  `CannotCreateTransactionException`, a `TransactionException`) — didn't matter here since
+  the catch-all is intentionally broad (`Exception`), which is exactly the point of using
+  a catch-all versus the narrower type-specific catch in `TransactionListener`. 20 tests
+  pass (2 new).
+- Also noted the user's `docker compose` stack had gone from exited (checked earlier) back
+  to running again by this point — not something I did; just confirming state before each
+  isolated-port verification, per the standing caution above.
 
 ### 2026-07-01 — Git repo + secrets incidents + JMS retry/DLQ + structured errors
 - Set up a dedicated git repo for the project (previously an untracked subdirectory of the
